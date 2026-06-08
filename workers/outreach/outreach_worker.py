@@ -154,6 +154,21 @@ def normalize_prospect(raw: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def load_json_env_list(name: str) -> set[str]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return set()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        LOG.warning("Ignoring invalid JSON in %s.", name)
+        return set()
+    if not isinstance(parsed, list):
+        LOG.warning("Ignoring non-list value in %s.", name)
+        return set()
+    return {str(value).strip().lower() for value in parsed if str(value).strip()}
+
+
 def load_seed(input_path: Path | None) -> list[dict[str, Any]]:
     if not input_path or not input_path.exists():
         return []
@@ -228,6 +243,9 @@ def discover_from_github(target: int, category: str | None) -> list[dict[str, An
 
 
 def discover(target: int, input_path: Path | None, category: str | None) -> list[dict[str, Any]]:
+    excluded_emails = load_json_env_list("OUTREACH_EXCLUDED_EMAILS")
+    excluded_domains = load_json_env_list("OUTREACH_EXCLUDED_DOMAINS")
+    excluded_project_keys = load_json_env_list("OUTREACH_EXCLUDED_PROJECT_KEYS")
     prospects = load_seed(input_path)
     if category:
         prospects = [prospect for prospect in prospects if prospect["category"] == category]
@@ -239,7 +257,14 @@ def discover(target: int, input_path: Path | None, category: str | None) -> list
     for prospect in prospects:
         email = prospect["email"].lower()
         domain = email.split("@")[-1]
-        if email in unique or domains[domain] >= max_per_domain:
+        project_key = prospect["project"].strip().lower()
+        if (
+            email in excluded_emails
+            or domain in excluded_domains
+            or project_key in excluded_project_keys
+            or email in unique
+            or domains[domain] >= max_per_domain
+        ):
             continue
         unique[email] = prospect
         domains[domain] += 1
@@ -458,6 +483,34 @@ def qwen_draft(
     )
 
 
+def build_draft_candidate(
+    prospect: dict[str, Any],
+    note: dict[str, Any],
+    subject: str,
+    body: str,
+    claims: list[str],
+    model_mode: str,
+) -> dict[str, Any]:
+    return {
+        "prospect_id": prospect["prospect_id"],
+        "name": prospect["name"],
+        "email": prospect["email"],
+        "email_source_url": prospect["email_source_url"],
+        "project": prospect["project"],
+        "category": prospect["category"],
+        "fit_score": prospect["fit_score"],
+        "subject": subject,
+        "body": body,
+        "word_count": word_count(body),
+        "links": [link.rstrip(".,;:!?") for link in URL_RE.findall(f"{subject}\n{body}")],
+        "evidence_urls": note["evidence_urls"],
+        "personalization_claims": claims,
+        "model_mode": model_mode,
+        "validation_status": "passed",
+        "validation_errors": [],
+    }
+
+
 def validate_draft(draft: dict[str, Any], max_per_domain: int, domains: Counter[str]) -> list[str]:
     errors: list[str] = []
     body = draft["body"]
@@ -551,25 +604,13 @@ def write_drafts(
                 model_mode = "fallback"
                 fallback_used = True
         subject, body, claims = generated
-        draft = {
-            "prospect_id": prospect["prospect_id"],
-            "name": prospect["name"],
-            "email": prospect["email"],
-            "email_source_url": prospect["email_source_url"],
-            "project": prospect["project"],
-            "category": prospect["category"],
-            "fit_score": prospect["fit_score"],
-            "subject": subject,
-            "body": body,
-            "word_count": word_count(body),
-            "links": [link.rstrip(".,;:!?") for link in URL_RE.findall(f"{subject}\n{body}")],
-            "evidence_urls": note["evidence_urls"],
-            "personalization_claims": claims,
-            "model_mode": model_mode,
-            "validation_status": "passed",
-            "validation_errors": [],
-        }
+        draft = build_draft_candidate(prospect, note, subject, body, claims, model_mode)
         errors = validate_draft(draft, max_per_domain, domains)
+        if errors and qwen_ready and model_mode == "qwen" and fallback_mode == "template":
+            fallback_used = True
+            subject, body, claims = template_draft(prospect, note)
+            draft = build_draft_candidate(prospect, note, subject, body, claims, "fallback")
+            errors = validate_draft(draft, max_per_domain, domains)
         if errors:
             failures.append({"prospect_id": prospect["prospect_id"], "errors": errors})
             continue
@@ -586,14 +627,6 @@ def write_json(output: Path, name: str, value: Any) -> None:
     temporary.replace(output / name)
 
 
-def default_input_path() -> Path:
-    script_dir = Path(__file__).resolve().parent
-    image_input = script_dir / "examples" / "sample-worker-input.json"
-    if image_input.exists():
-        return image_input
-    return script_dir.parent.parent / "examples" / "sample-worker-input.json"
-
-
 def run(args: argparse.Namespace) -> int:
     try:
         if args.health_check:
@@ -601,7 +634,7 @@ def run(args: argparse.Namespace) -> int:
             return 0
         started = utc_now()
         output = Path(args.output)
-        input_path = Path(args.input) if args.input else default_input_path()
+        input_path = Path(args.input) if args.input else None
         prospects = discover(args.target, input_path, args.category)
         notes = research(prospects)
         scored = score(prospects, notes)

@@ -95,6 +95,7 @@ async function runJungleGridOutreach(
 ): Promise<{ runId: string; summary: Record<string, unknown> }> {
   const repository = service.repository;
   const provider = new JungleGridWorkloadProvider();
+  const exclusions = repository.getWorkerExclusions();
   try {
     if (!provider.available()) throw new Error("JUNGLEGRID_API_KEY is not configured.");
     repository.updateRun(runId, { phase: "discovering" });
@@ -103,7 +104,7 @@ async function runJungleGridOutreach(
       "discovering",
       `Submitting ${options.mode} worker to Jungle Grid.`,
     );
-    const job = await provider.submit(options.mode, options.targetCount, options.category);
+    const job = await provider.submit(options.mode, options.targetCount, options.category, exclusions);
     repository.updateRun(runId, { junglegridJobId: job.job_id });
     repository.addRunEvent(runId, "discovering", "Jungle Grid job submitted.", "info", {
       jobId: job.job_id,

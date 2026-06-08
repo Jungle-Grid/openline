@@ -43,6 +43,12 @@ export type JungleGridLogEntry = {
   message?: string;
 };
 
+type WorkerExclusions = {
+  emails: string[];
+  domains: string[];
+  projectKeys: string[];
+};
+
 type FetchLike = typeof fetch;
 
 function isTerminal(status: string): boolean {
@@ -99,15 +105,20 @@ export class JungleGridWorkloadProvider {
     }
   }
 
-  async estimate(mode: OutreachMode, target: number): Promise<unknown> {
-    return this.request("POST", "/v1/jobs/estimate", this.buildJobPayload(mode, target));
+  async estimate(mode: OutreachMode, target: number, exclusions?: WorkerExclusions): Promise<unknown> {
+    return this.request("POST", "/v1/jobs/estimate", this.buildJobPayload(mode, target, undefined, exclusions));
   }
 
-  async submit(mode: OutreachMode, target: number, category?: string): Promise<JungleGridJob> {
+  async submit(
+    mode: OutreachMode,
+    target: number,
+    category?: string,
+    exclusions?: WorkerExclusions,
+  ): Promise<JungleGridJob> {
     if (mode === "local-template") {
       throw new Error("local-template does not submit a Jungle Grid job.");
     }
-    const payload = this.buildJobPayload(mode, target, category);
+    const payload = this.buildJobPayload(mode, target, category, exclusions);
     return this.request<JungleGridJob>("POST", "/v1/jobs", payload);
   }
 
@@ -189,7 +200,12 @@ export class JungleGridWorkloadProvider {
     } as ArtifactBundle;
   }
 
-  private buildJobPayload(mode: OutreachMode, target: number, category?: string) {
+  private buildJobPayload(
+    mode: OutreachMode,
+    target: number,
+    category?: string,
+    exclusions?: WorkerExclusions,
+  ) {
     const workerJob = workerJobForMode(mode);
     const command = [
       "python",
@@ -222,6 +238,9 @@ export class JungleGridWorkloadProvider {
         FIT_SCORE_THRESHOLD: String(this.env.FIT_SCORE_THRESHOLD),
         MAX_DRAFTS_PER_DOMAIN: String(this.env.MAX_DRAFTS_PER_DOMAIN),
         GITHUB_TOKEN: this.env.GITHUB_TOKEN ?? "",
+        OUTREACH_EXCLUDED_EMAILS: JSON.stringify(exclusions?.emails ?? []),
+        OUTREACH_EXCLUDED_DOMAINS: JSON.stringify(exclusions?.domains ?? []),
+        OUTREACH_EXCLUDED_PROJECT_KEYS: JSON.stringify(exclusions?.projectKeys ?? []),
       },
       expected_artifacts: requiredArtifactNames.map((name) => `/workspace/artifacts/${name}`),
       metadata: {

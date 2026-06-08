@@ -98,6 +98,7 @@ program
     const estimate = await new JungleGridWorkloadProvider().estimate(
       "junglegrid-qwen",
       Math.min(options.count, 3),
+      new OutreachService().repository.getWorkerExclusions(),
     );
     console.log(JSON.stringify(estimate, null, 2));
   });

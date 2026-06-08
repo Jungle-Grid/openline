@@ -61,6 +61,12 @@ type DraftInput = {
   validationErrors: string[];
 };
 
+type WorkerExclusions = {
+  emails: string[];
+  domains: string[];
+  projectKeys: string[];
+};
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -836,6 +842,38 @@ export class OutreachRepository {
       )
       .get(email, domain);
     return Boolean(row);
+  }
+
+  getWorkerExclusions(): WorkerExclusions {
+    const prospectRows = this.db
+      .prepare("SELECT normalized_email, domain, project_key FROM prospects")
+      .all() as Array<{ normalized_email: string | null; domain: string | null; project_key: string | null }>;
+    const blockedRows = this.db
+      .prepare("SELECT email, domain FROM blocked_contacts")
+      .all() as Array<{ email: string | null; domain: string | null }>;
+    const suppressionRows = this.db
+      .prepare("SELECT email, domain FROM suppressions")
+      .all() as Array<{ email: string | null; domain: string | null }>;
+
+    const emails = new Set<string>();
+    const domains = new Set<string>();
+    const projectKeys = new Set<string>();
+
+    for (const row of prospectRows) {
+      if (row.normalized_email) emails.add(row.normalized_email.toLowerCase());
+      if (row.domain) domains.add(row.domain.toLowerCase());
+      if (row.project_key) projectKeys.add(row.project_key.toLowerCase());
+    }
+    for (const row of [...blockedRows, ...suppressionRows]) {
+      if (row.email) emails.add(row.email.toLowerCase());
+      if (row.domain) domains.add(row.domain.toLowerCase());
+    }
+
+    return {
+      emails: [...emails].sort(),
+      domains: [...domains].sort(),
+      projectKeys: [...projectKeys].sort(),
+    };
   }
 
   countDraftsSince(isoDate: string): number {

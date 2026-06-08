@@ -36,4 +36,20 @@ describe("OutreachRepository deduplication", () => {
     repository.setProspectStatus(prospect.id, "reviewed");
     expect(repository.getProspect(prospect.id)?.status).toBe("reviewed");
   });
+
+  it("exposes worker exclusions from saved contacts and suppressions", () => {
+    const repository = new OutreachRepository();
+    repository.upsertProspect(base);
+    repository.addSuppression({
+      email: "blocked@other.dev",
+      domain: "suppressed.dev",
+      reason: "Operator suppression.",
+    });
+
+    expect(repository.getWorkerExclusions()).toEqual({
+      emails: ["blocked@other.dev", "jane@acme.dev"],
+      domains: ["acme.dev", "suppressed.dev"],
+      projectKeys: ["acme/agent"],
+    });
+  });
 });
