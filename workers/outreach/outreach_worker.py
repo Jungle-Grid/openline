@@ -50,6 +50,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 LOG = logging.getLogger("outreach-worker")
+OLLAMA_PROCESS: subprocess.Popen[Any] | None = None
 
 
 def utc_now() -> str:
@@ -362,12 +363,13 @@ def wait_for_ollama(timeout_seconds: int = 25) -> bool:
 
 
 def ensure_ollama(model: str) -> bool:
+    global OLLAMA_PROCESS
     if not wait_for_ollama(2):
         host = urllib.parse.urlparse(ollama_base())
         if host.hostname not in {"127.0.0.1", "localhost"}:
             return False
         try:
-            subprocess.Popen(
+            OLLAMA_PROCESS = subprocess.Popen(
                 ["ollama", "serve"],
                 stdout=sys.stderr,
                 stderr=sys.stderr,
@@ -390,9 +392,25 @@ def ensure_ollama(model: str) -> bool:
                 timeout=900,
             )
     except (urllib.error.URLError, TimeoutError) as error:
-        LOG.warning("Ollama model pull failed: %s", error)
-        return False
+            LOG.warning("Ollama model pull failed: %s", error)
+            return False
     return True
+
+
+def stop_ollama() -> None:
+    global OLLAMA_PROCESS
+    if OLLAMA_PROCESS is None:
+        return
+    process = OLLAMA_PROCESS
+    OLLAMA_PROCESS = None
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
 
 
 def qwen_draft(
@@ -577,62 +595,69 @@ def default_input_path() -> Path:
 
 
 def run(args: argparse.Namespace) -> int:
-    if args.health_check:
-        print("ok")
-        return 0
-    started = utc_now()
-    output = Path(args.output)
-    input_path = Path(args.input) if args.input else default_input_path()
-    prospects = discover(args.target, input_path, args.category)
-    notes = research(prospects)
-    scored = score(prospects, notes)
-    use_qwen = args.job in {"write-emails-qwen", "full-run-qwen"}
-    drafts: list[dict[str, Any]] = []
-    failures: list[dict[str, Any]] = []
-    fallback_used = False
-    if args.job in {
-        "write-emails-template",
-        "write-emails-qwen",
-        "full-run-template",
-        "full-run-qwen",
-    }:
-        drafts, failures, fallback_used = write_drafts(scored, notes, use_qwen)
+    try:
+        if args.health_check:
+            print("ok")
+            return 0
+        started = utc_now()
+        output = Path(args.output)
+        input_path = Path(args.input) if args.input else default_input_path()
+        prospects = discover(args.target, input_path, args.category)
+        notes = research(prospects)
+        scored = score(prospects, notes)
+        use_qwen = args.job in {"write-emails-qwen", "full-run-qwen"}
+        drafts: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        fallback_used = False
+        if args.job in {
+            "write-emails-template",
+            "write-emails-qwen",
+            "full-run-template",
+            "full-run-qwen",
+        }:
+            drafts, failures, fallback_used = write_drafts(scored, notes, use_qwen)
 
-    public_prospects = [
-        {key: value for key, value in row.items() if key not in {"research_text", "evidence_urls", "stars", "active"}}
-        for row in prospects
-    ]
-    mode = "junglegrid-qwen" if use_qwen else "junglegrid-template"
-    summary = {
-        "job": args.job,
-        "mode": mode,
-        "target": args.target,
-        "discovered": len(prospects),
-        "researched": len(notes),
-        "scored": len(scored),
-        "drafts_passed": len(drafts),
-        "drafts_failed": len(failures),
-        "skipped": len(failures),
-        "fallback_used": fallback_used,
-        "model": os.getenv("OLLAMA_MODEL", "qwen2.5:3b") if use_qwen else "template",
-        "started_at": started,
-        "completed_at": utc_now(),
-    }
-    report = {
-        "valid": True,
-        "checked": len(drafts) + len(failures),
-        "passed": len(drafts),
-        "failed": len(failures),
-        "errors": failures,
-    }
-    write_json(output, "prospects.json", public_prospects)
-    write_json(output, "research_notes.json", notes)
-    write_json(output, "scored_prospects.json", scored)
-    write_json(output, "email_drafts.json", drafts)
-    write_json(output, "run_summary.json", summary)
-    write_json(output, "validation_report.json", report)
-    LOG.info("Wrote %s validated drafts and %s validation failures.", len(drafts), len(failures))
-    return 0
+        public_prospects = [
+            {
+                key: value
+                for key, value in row.items()
+                if key not in {"research_text", "evidence_urls", "stars", "active"}
+            }
+            for row in prospects
+        ]
+        mode = "junglegrid-qwen" if use_qwen else "junglegrid-template"
+        summary = {
+            "job": args.job,
+            "mode": mode,
+            "target": args.target,
+            "discovered": len(prospects),
+            "researched": len(notes),
+            "scored": len(scored),
+            "drafts_passed": len(drafts),
+            "drafts_failed": len(failures),
+            "skipped": len(failures),
+            "fallback_used": fallback_used,
+            "model": os.getenv("OLLAMA_MODEL", "qwen2.5:3b") if use_qwen else "template",
+            "started_at": started,
+            "completed_at": utc_now(),
+        }
+        report = {
+            "valid": True,
+            "checked": len(drafts) + len(failures),
+            "passed": len(drafts),
+            "failed": len(failures),
+            "errors": failures,
+        }
+        write_json(output, "prospects.json", public_prospects)
+        write_json(output, "research_notes.json", notes)
+        write_json(output, "scored_prospects.json", scored)
+        write_json(output, "email_drafts.json", drafts)
+        write_json(output, "run_summary.json", summary)
+        write_json(output, "validation_report.json", report)
+        LOG.info("Wrote %s validated drafts and %s validation failures.", len(drafts), len(failures))
+        return 0
+    finally:
+        stop_ollama()
 
 
 def parse_args() -> argparse.Namespace:
