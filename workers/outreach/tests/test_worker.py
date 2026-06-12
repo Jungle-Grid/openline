@@ -255,6 +255,54 @@ restricted_sources:
         self.assertIn("execution substrate", accepted_notes[0]["semantic_suggested_angle"].lower())
         self.assertTrue(accepted_notes[0]["semantic_score_explanation"])
 
+    def test_qwen_semantic_analysis_accepts_wrapped_items_payload(self):
+        prospects = [
+            {
+                "prospect_id": "p1",
+                "project": "acme/runtime",
+                "category": "agent_compute",
+                "project_description": "Agent runtime",
+                "diagnostics": {"has_campaign_workload_signal": True},
+            }
+        ]
+        notes = [
+            {
+                "prospect_id": "p1",
+                "summary": "Runtime executes long-running jobs.",
+                "personalization_detail": "Long-running jobs retain logs.",
+                "junglegrid_relevance": "Execution fit.",
+                "evidence_urls": ["https://example.dev/runtime"],
+            }
+        ]
+        response = {
+            "response": json.dumps(
+                {
+                    "analysis": {
+                        "items": [
+                            {
+                                "prospect_id": "p1",
+                                "qualified": True,
+                                "qualification_reason": "Direct durable workload evidence.",
+                                "research_analysis": "The runtime executes long-running jobs and retains logs.",
+                                "score_explanation": "Primary evidence supports workload and integration fit.",
+                                "suggested_angle": "Execution substrate beneath the existing runtime.",
+                            }
+                        ]
+                    }
+                }
+            )
+        }
+        with patch.object(worker_module, "request_json", return_value=response):
+            analysis = worker_module.qwen_semantic_analysis(prospects, notes, "qwen-test")
+        self.assertIn("p1", analysis)
+        self.assertTrue(analysis["p1"]["qualified"])
+
+    def test_qwen_json_parser_accepts_fenced_json(self):
+        parsed = worker_module.parse_qwen_json_response(
+            {"response": '```json\n{"status":"send_ready","reasons":[]}\n```'}
+        )
+        self.assertEqual(parsed["status"], "send_ready")
+
     def test_qwen_semantic_validation_rejects_unsupported_draft(self):
         drafts = [
             {

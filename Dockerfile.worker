@@ -1,6 +1,6 @@
 FROM python:3.11-slim-bookworm
 
-LABEL org.opencontainers.image.source="https://github.com/Jungle-Grid/jungle-outreach-agent" \
+LABEL org.opencontainers.image.source="https://github.com/Jungle-Grid/openline" \
       org.opencontainers.image.description="Jungle Grid-powered outreach research and draft worker" \
       org.opencontainers.image.licenses="Apache-2.0"
 

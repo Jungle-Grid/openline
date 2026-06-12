@@ -2588,6 +2588,50 @@ def qwen_draft(
     )
 
 
+def parse_qwen_json_response(response: dict[str, Any]) -> Any:
+    raw = str(response.get("response", "")).strip()
+    if not raw:
+        raise ValueError("Qwen returned an empty response.")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        match = re.search(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", raw, re.I | re.S)
+        if match:
+            return json.loads(match.group(1))
+        start_candidates = [index for index in (raw.find("{"), raw.find("[")) if index >= 0]
+        end_candidates = [index for index in (raw.rfind("}"), raw.rfind("]")) if index >= 0]
+        if start_candidates and end_candidates:
+            start = min(start_candidates)
+            end = max(end_candidates)
+            if end > start:
+                return json.loads(raw[start : end + 1])
+        raise
+
+
+def unwrap_qwen_object(value: Any, required_key: str | None = None) -> dict[str, Any]:
+    if isinstance(value, dict) and (required_key is None or required_key in value):
+        return value
+    if isinstance(value, list) and required_key == "items":
+        return {"items": value}
+    if isinstance(value, dict):
+        for key in ("result", "analysis", "output", "data", "response"):
+            nested = value.get(key)
+            if isinstance(nested, dict) and (required_key is None or required_key in nested):
+                return nested
+            if isinstance(nested, list) and required_key == "items":
+                return {"items": nested}
+        for nested in value.values():
+            if isinstance(nested, dict) and (required_key is None or required_key in nested):
+                return nested
+            if isinstance(nested, list) and required_key == "items":
+                return {"items": nested}
+    raise ValueError(
+        f"Qwen response did not return a JSON object containing {required_key}."
+        if required_key
+        else "Qwen response did not return a JSON object."
+    )
+
+
 def qwen_semantic_analysis(
     prospects: list[dict[str, Any]],
     notes: list[dict[str, Any]],
@@ -2644,7 +2688,7 @@ def qwen_semantic_analysis(
         },
         timeout=240,
     )
-    generated = json.loads(str(response.get("response", "")).strip())
+    generated = unwrap_qwen_object(parse_qwen_json_response(response), "items")
     items = generated.get("items")
     if not isinstance(items, list):
         raise ValueError("Semantic analysis did not return an items array.")
@@ -2757,7 +2801,7 @@ def qwen_semantic_validate_drafts(
         },
         timeout=240,
     )
-    generated = json.loads(str(response.get("response", "")).strip())
+    generated = unwrap_qwen_object(parse_qwen_json_response(response), "items")
     items = generated.get("items")
     if not isinstance(items, list):
         raise ValueError("Semantic validation did not return an items array.")
@@ -2830,7 +2874,7 @@ def qwen_conversation_turn(payload: dict[str, Any], model: str) -> dict[str, Any
         },
         timeout=240,
     )
-    generated = json.loads(str(response.get("response", "")).strip())
+    generated = unwrap_qwen_object(parse_qwen_json_response(response))
     allowed_classifications = {
         "interested",
         "question",
@@ -2944,7 +2988,7 @@ def qwen_validate_conversation_response(
         },
         timeout=240,
     )
-    generated = json.loads(str(response.get("response", "")).strip())
+    generated = unwrap_qwen_object(parse_qwen_json_response(response))
     status = str(generated.get("status", ""))
     reasons = [
         str(reason).strip()
